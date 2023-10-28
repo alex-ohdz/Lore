@@ -203,15 +203,13 @@ def get_rule(x, y, dt, feature_names, class_name, class_values, numeric_columns,
     premises = compact_premises(premises)
     return Rule(premises, cons, class_name)
 
-# refactorizar este metodo y eliminar el uso de clases u objetos
+
 def get_depth(dt, kind='binary'):
 
-    if kind == 'nari':
+    if kind == 'binary':
         surr = SuperTree()
-        print('sono in if')
         return surr.check_size(dt)
     else:
-        print('entro nel posto sbagliato')
         n_nodes = dt.tree_.node_count
         children_left = dt.tree_.children_left
         children_right = dt.tree_.children_right
@@ -325,7 +323,7 @@ def compact_premises(plist):
             compact_plist.append(alist[0])
     return compact_plist
 
-
+# esteeeeeeeeeeeeeeeeeee
 def get_counterfactual_rules(x, y, dt, Z, Y, feature_names, class_name, class_values, numeric_columns, features_map,
                              features_map_inv, multi_label=False, encdec=None, filter_crules = None, constraints=None,
                              unadmittible_features=None):
@@ -379,6 +377,7 @@ def get_counterfactual_rules(x, y, dt, Z, Y, feature_names, class_name, class_va
                     delta_list.append(delta)
 
     return crule_list, delta_list
+
 
 def apply_counterfactual_supert(x, delta, feature_names, features_map=None, features_map_inv=None, numeric_columns=None):
     xd = vector2dict(x, feature_names)
@@ -572,6 +571,7 @@ def get_rule_supert(x, dt, feature_names, class_name, class_values, numeric_colu
 
     return Rule(premises, cons, class_name)
 
+#supertree is not binary
 def get_counterfactual_rules_supert(x, y, dt, Z, Y, feature_names, class_name, class_values, numeric_columns, features_map,
                              features_map_inv, multi_label=False, filter_crules = None, encdec = None, unadmittible_features=None):
     clen = np.inf
@@ -614,8 +614,7 @@ def get_counterfactual_rules_supert(x, y, dt, Z, Y, feature_names, class_name, c
                     delta_list.append(delta)
     return crule_list, delta_list
 
-
-
+# refactorizar este metodo y eliminar el uso de clases u objetos
 def get_falsified_conditions(xd, crule):
     delta = list()
     nbr_falsified_conditions = 0

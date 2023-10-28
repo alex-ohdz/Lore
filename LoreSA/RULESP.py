@@ -2,9 +2,9 @@ import json
 import numpy as np
 from encdec import *
 from surrogate import *
-from util import vector2dict, multilabel2str
+from util import vector2dict
 from collections import defaultdict
-
+import copy
 
 # Se crea una condicion para su uso en diccionarios 
 def create_condition(att, op, thr, is_continuous=True):
@@ -119,3 +119,262 @@ def get_rule(x, y,dt, feature_names, class_name, class_values, numeric_columns, 
     cons = class_values[int(dt_outcome)]
 
     return {"premises": premises, "consequence": cons, "class_name": class_name}
+
+# obtener la profundidad maxima de un arbol 
+def get_depth(dt):
+    # Obtener propiedades del árbol
+    n_nodes = dt.tree_.node_count
+    children_left = dt.tree_.children_left
+    children_right = dt.tree_.children_right
+
+    # Inicializar la profundidad de los nodos
+    node_depth = np.zeros(shape=n_nodes, dtype=np.int64)
+    stack = [(0, -1)]  # seed is the root node id and its parent depth
+
+    # Recorrer el árbol
+    while len(stack) > 0:
+        node_id, parent_depth = stack.pop()
+        node_depth[node_id] = parent_depth + 1
+
+        # Si el nodo actual no es un nodo hoja, agregar sus hijos a la pila
+        if children_left[node_id] != children_right[node_id]:
+            stack.append((children_left[node_id], parent_depth + 1))
+            stack.append((children_right[node_id], parent_depth + 1))
+
+    # Obtener y devolver la máxima profundidad
+    return np.max(node_depth)
+
+# obtener las reglas del árbol 
+def get_rules(dt, feature_names, class_name, class_values, numeric_columns):
+    n_nodes = dt.tree_.node_count
+    feature = dt.tree_.feature
+    threshold = dt.tree_.threshold
+    children_left = dt.tree_.children_left
+    children_right = dt.tree_.children_right
+    value = dt.tree_.value
+
+    is_leaves = np.zeros(shape=n_nodes, dtype=bool)
+    stack = [(0, -1)]
+    reverse_dt_dict = dict()
+    left_right = dict()
+    while len(stack) > 0:
+        node_id, parent_depth = stack.pop()
+        if children_left[node_id] != children_right[node_id]:
+            stack.append((children_left[node_id], parent_depth + 1))
+            stack.append((children_right[node_id], parent_depth + 1))
+            reverse_dt_dict[children_left[node_id]] = node_id
+            left_right[(node_id, children_left[node_id])] = 'l'
+            reverse_dt_dict[children_right[node_id]] = node_id
+            left_right[(node_id, children_right[node_id])] = 'r'
+        else:
+            is_leaves[node_id] = True
+
+    node_index_list = list()
+    for node_id in range(n_nodes):
+        if is_leaves[node_id]:
+            node_index = [node_id]
+            parent_node = reverse_dt_dict.get(node_id, None)
+            while parent_node:
+                node_index.insert(0, parent_node)
+                parent_node = reverse_dt_dict.get(parent_node, None)
+            if node_index[0] != 0:
+                node_index.insert(0, 0)
+            node_index_list.append(node_index)
+
+    rules = list()
+    for node_index in node_index_list:
+        premises = list()
+        for i in range(len(node_index) - 1):
+            node_id = node_index[i]
+            op = '<=' if left_right[(node_id, node_index[i+1])] == 'l' else '>'
+            att = feature_names[feature[node_id]]
+            thr = threshold[node_id]
+            premises.append(create_condition(att, op, thr, att in numeric_columns))
+
+        cons = class_values[np.argmax(value[node_index[-1]])]
+
+        rule = {"premises": premises, "consequence": cons, "class_name": class_name}
+        rules.append(rule)
+
+    return rules
+
+def compact_premises(plist):
+    att_list = defaultdict(list)
+    
+    for p in plist:
+        att_list[p['att']].append(p)
+
+    compact_plist = list()
+    for att, alist in att_list.items():
+        if len(alist) > 1:
+            min_thr = None
+            max_thr = None
+            for av in alist:
+                if av['op'] == '<=':
+                    max_thr = min(av['thr'], max_thr) if max_thr else av['thr']
+                elif av['op'] == '>':
+                    min_thr = max(av['thr'], min_thr) if min_thr else av['thr']
+
+            if max_thr:
+                compact_plist.append(create_condition(att, '<=', max_thr))
+
+            if min_thr:
+                compact_plist.append(create_condition(att, '>', min_thr))
+        else:
+            compact_plist.append(alist[0])
+    return compact_plist
+
+def get_counterfactual_rules(x, y, dt, Z, Y, feature_names, class_name, class_values, numeric_columns, features_map,
+                             features_map_inv, encdec=None, filter_crules=None, constraints=None,
+                             unadmittible_features=None):
+    clen = np.inf
+    crule_list = list()
+    delta_list = list()
+    Z1 = Z[np.where(Y != y)[0]]
+    xd = vector2dict(x, feature_names)
+    for z in Z1:
+        crule = get_rule(z, y, dt, feature_names, class_name, class_values, numeric_columns, encdec)
+        delta, qlen = get_falsified_conditions(xd, crule)
+        
+        if unadmittible_features:
+            is_feasible = check_feasibility_of_falsified_conditions(delta, unadmittible_features)
+            if not is_feasible:
+                continue
+        
+        if constraints:
+            to_remove = list()
+            for p in crule['premises']:
+                if p['att'] in constraints.keys():
+                    if p['op'] == constraints[p['att']]['op'] and p['thr'] > constraints[p['att']]['thr']:
+                        break
+                    else:
+                        to_remove.append(p) # Aquí falta lo que quieres hacer con `to_remove`
+        
+        if filter_crules:
+            xc = apply_counterfactual(x, delta, feature_names, features_map, features_map_inv, numeric_columns)
+            bb_outcomec = filter_crules(xc.reshape(1, -1))[0]
+            bb_outcomec = class_values[bb_outcomec] if isinstance(class_name, str) else bb_outcomec # Eliminamos referencia a multilabel
+            dt_outcomec = crule['cons']
+
+            if bb_outcomec == dt_outcomec:
+                if qlen < clen:
+                    clen = qlen
+                    crule_list = [crule]
+                    delta_list = [delta]
+                elif qlen == clen and delta not in delta_list:
+                    crule_list.append(crule)
+                    delta_list.append(delta)
+        else:
+            if qlen < clen:
+                clen = qlen
+                crule_list = [crule]
+                delta_list = [delta]
+            elif qlen == clen and delta not in delta_list:
+                crule_list.append(crule)
+                delta_list.append(delta)
+
+    return crule_list, delta_list
+
+# def apply_counterfactual_supert(x, delta, feature_names, features_map=None, features_map_inv=None, numeric_columns=None):
+#     xd = vector2dict(x, feature_names)
+#     xcd = copy.deepcopy(xd)
+    
+#     for p in delta:
+#         if p['op'] != 'range':
+#             if p['att'] in numeric_columns:
+#                 if p['thr'] == int(p['thr']):
+#                     gap = 1.0
+#                 else:
+#                     decimals = list(str(p['thr']).split('.')[1])
+#                     for idx, e in enumerate(decimals):
+#                         if e != '0':
+#                             break
+#                     gap = 1 / (10**(idx+1))
+#                 xcd[p['att']] += gap if p['op'] == '>' else p['thr']
+#             else:
+#                 fn = p['att'].split('=')[0]
+#                 value_to_set = 1.0 if p['op'] == '>' else 0.0
+#                 if features_map is not None and p['att'] in feature_names:
+#                     feature_category = features_map_inv.get(list(feature_names).index(p['att']))
+#                     if feature_category:
+#                         for fv in features_map.get(feature_category, []):
+#                             xcd['%s=%s' % (fn, fv)] = 0.0 if value_to_set == 1.0 else 1.0
+#                 xcd[p['att']] = value_to_set
+
+#     xc = [xcd.get(fn, 0) for fn in feature_names]
+#     return np.array(xc)
+
+def apply_counterfactual_supert(x, delta, feature_names, features_map=None, features_map_inv=None, numeric_columns=None):
+    xd = vector2dict(x, feature_names)
+    xcd = copy.deepcopy(xd)
+    for p in delta:
+        if p["op"] != 'range':
+            if p["att"] in numeric_columns:
+                if p["thr"] == int(p["thr"]):
+                    gap = 1.0
+                else:
+                    decimals = list(str(p["thr"]).split('.')[1])
+                    for idx, e in enumerate(decimals):
+                        if e != '0':
+                            break
+                    gap = 1 / (10**(idx+1))
+                if p["op"] == '>':
+                    xcd[p["att"]] = p["thr"] + gap
+                else:
+                    xcd[p["att"]] = p["thr"]
+            else:
+                fn = p["att"].split('=')[0]
+                if p["op"] == '>':
+                    if features_map is not None:
+                        fi = list(feature_names).index(p["att"])
+                        fi = features_map_inv[fi]
+                        for fv in features_map[fi]:
+                            xcd['%s=%s' % (fn, fv)] = 0.0
+                    xcd[p["att"]] = 1.0
+
+                else:
+                    if features_map is not None:
+                        fi = list(feature_names).index(p["att"])
+                        fi = features_map_inv[fi]
+                        for fv in features_map[fi]:
+                            xcd['%s=%s' % (fn, fv)] = 1.0
+                    xcd[p["att"]] = 0.0
+
+        else:
+            # caso en el que tenemos el rango
+            if p["att"] in numeric_columns:
+                if p["thr"][0] == int(p["thr"][0]):
+                    gap = 1.0
+                else:
+                    decimals = list(str(p["thr"]).split('.')[1])
+                    for idx, e in enumerate(decimals):
+                        if e != '0':
+                            break
+                    gap = 1 / (10**(idx+1))
+                    xcd[p["att"]] = p["thr"]
+            else:
+                fn = p["att"].split('=')[0]
+                if p["op"] == '>':
+                    if features_map is not None:
+                        fi = list(feature_names).index(p["att"])
+                        fi = features_map_inv[fi]
+                        for fv in features_map[fi]:
+                            xcd['%s=%s' % (fn, fv)] = 0.0
+                    xcd[p["att"]] = 1.0
+
+                else:
+                    if features_map is not None:
+                        fi = list(feature_names).index(p["att"])
+                        fi = features_map_inv[fi]
+                        for fv in features_map[fi]:
+                            xcd['%s=%s' % (fn, fv)] = 1.0
+                    xcd[p["att"]] = 0.0
+
+    xc = np.zeros(len(xd))
+    for i, fn in enumerate(feature_names):
+        try:
+            xc[i] = xcd[fn]
+        except:
+            xc[i] = xcd[fn][0]
+
+    return xc
