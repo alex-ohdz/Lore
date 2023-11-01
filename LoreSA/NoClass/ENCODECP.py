@@ -22,7 +22,6 @@ def initialize_globals(dataset, class_name):
 
     # Ejemplo:
     features = [c for c in dataset.columns if c != class_name]
-    # ... (resto del código para inicializar las demás variables)
 
 def enc_fit_transform(dataset, class_name):
     global features, cont_features_names, cate_features_names, cate_features_idx, cont_features_idx, encdec, dataset_enc
@@ -104,13 +103,13 @@ def dec(x):
 # dataset = ... # Tu DataFrame o conjunto de datos
 # class_name = "tu_nombre_de_clase"
 # Cargamos el CSV en un DataFrame
-dataset = pd.read_csv(r'LoreSA/datasets/iris.csv')
-# dataset = ... # Tu DataFrame o conjunto de datos
-# class_name = "tu_nombre_de_clase"
-class_name = "class"
-initialize_globals(dataset, class_name)
-encoded_data = enc_fit_transform(dataset, class_name)
-# Asumo que el nombre de la clase es 'class', cambia esto si es diferente
-# Luego, puedes llamar a tus funciones
-initialize_globals(dataset, class_name)
-encoded_data = enc_fit_transform(dataset, class_name)
+# dataset = pd.read_csv(r'LoreSA/datasets/iris.csv')
+# # dataset = ... # Tu DataFrame o conjunto de datos
+# # class_name = "tu_nombre_de_clase"
+# class_name = "class"
+# initialize_globals(dataset, class_name)
+# encoded_data = enc_fit_transform(dataset, class_name)
+# # Asumo que el nombre de la clase es 'class', cambia esto si es diferente
+# # Luego, puedes llamar a tus funciones
+# initialize_globals(dataset, class_name)
+# encoded_data = enc_fit_transform(dataset, class_name)

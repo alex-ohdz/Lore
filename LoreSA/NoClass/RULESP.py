@@ -113,7 +113,7 @@ def get_rule(x, y,dt, feature_names, class_name, class_values, numeric_columns, 
                 att = feature_names[feature[node_id]]
                 thr = threshold[node_id]
 
-            premises.append((att, op, thr))
+            premises.append({"att": att, "op": op, "thr": thr})
 
     dt_outcome = dt.predict(x)[0]
     cons = class_values[int(dt_outcome)]
@@ -234,7 +234,7 @@ def get_counterfactual_rules(x, y, dt, Z, Y, feature_names, class_name, class_va
     xd = vector2dict(x, feature_names)
     for z in Z1:
         crule = get_rule(z, y, dt, feature_names, class_name, class_values, numeric_columns, encdec)
-        delta, qlen = get_falsified_conditions(xd, crule)
+        delta, qlen = get_falsified_conditions(xd, crule["premises"])
         
         if unadmittible_features:
             is_feasible = check_feasibility_of_falsified_conditions(delta, unadmittible_features)
@@ -275,106 +275,84 @@ def get_counterfactual_rules(x, y, dt, Z, Y, feature_names, class_name, class_va
 
     return crule_list, delta_list
 
-# def apply_counterfactual_supert(x, delta, feature_names, features_map=None, features_map_inv=None, numeric_columns=None):
-#     xd = vector2dict(x, feature_names)
-#     xcd = copy.deepcopy(xd)
+def get_falsified_conditions(xd, crule_premises):
+    delta = list()
+    nbr_falsified_conditions = 0
     
-#     for p in delta:
-#         if p['op'] != 'range':
-#             if p['att'] in numeric_columns:
-#                 if p['thr'] == int(p['thr']):
-#                     gap = 1.0
-#                 else:
-#                     decimals = list(str(p['thr']).split('.')[1])
-#                     for idx, e in enumerate(decimals):
-#                         if e != '0':
-#                             break
-#                     gap = 1 / (10**(idx+1))
-#                 xcd[p['att']] += gap if p['op'] == '>' else p['thr']
-#             else:
-#                 fn = p['att'].split('=')[0]
-#                 value_to_set = 1.0 if p['op'] == '>' else 0.0
-#                 if features_map is not None and p['att'] in feature_names:
-#                     feature_category = features_map_inv.get(list(feature_names).index(p['att']))
-#                     if feature_category:
-#                         for fv in features_map.get(feature_category, []):
-#                             xcd['%s=%s' % (fn, fv)] = 0.0 if value_to_set == 1.0 else 1.0
-#                 xcd[p['att']] = value_to_set
+    for p in crule_premises:
+        op = p["op"]
+        att = p["att"]
+        thr = p["thr"]
+        
+        # Verificar si el atributo está en xd
+        if att not in xd:
+            print(f"El atributo {att} no se encuentra en xd.")
+            continue
 
-#     xc = [xcd.get(fn, 0) for fn in feature_names]
-#     return np.array(xc)
+        try:
+            if op == '<=' and xd[att] > thr:
+                delta.append(p)
+                nbr_falsified_conditions += 1
+            elif op == '>' and xd[att] <= thr:
+                delta.append(p)
+                nbr_falsified_conditions += 1
+        except Exception as e:
+            print(f"Error al procesar la premisa {p}: {e}")
+            continue
 
-def apply_counterfactual_supert(x, delta, feature_names, features_map=None, features_map_inv=None, numeric_columns=None):
-    xd = vector2dict(x, feature_names)
-    xcd = copy.deepcopy(xd)
+    return delta, nbr_falsified_conditions
+
+def check_feasibility_of_falsified_conditions(delta, unadmittible_features):
     for p in delta:
-        if p["op"] != 'range':
-            if p["att"] in numeric_columns:
-                if p["thr"] == int(p["thr"]):
-                    gap = 1.0
-                else:
-                    decimals = list(str(p["thr"]).split('.')[1])
-                    for idx, e in enumerate(decimals):
-                        if e != '0':
-                            break
-                    gap = 1 / (10**(idx+1))
-                if p["op"] == '>':
-                    xcd[p["att"]] = p["thr"] + gap
-                else:
-                    xcd[p["att"]] = p["thr"]
+        p_key = p["att"] if p["is_continuous"] else p["att"].split('=')[0]
+        
+        if p_key in unadmittible_features:
+            if unadmittible_features[p_key] is None:
+                return False
             else:
-                fn = p["att"].split('=')[0]
-                if p["op"] == '>':
-                    if features_map is not None:
-                        fi = list(feature_names).index(p["att"])
-                        fi = features_map_inv[fi]
-                        for fv in features_map[fi]:
-                            xcd['%s=%s' % (fn, fv)] = 0.0
-                    xcd[p["att"]] = 1.0
+                if unadmittible_features[p_key] == p["op"]:
+                    return False
+                    
+    return True
 
-                else:
-                    if features_map is not None:
-                        fi = list(feature_names).index(p["att"])
-                        fi = features_map_inv[fi]
-                        for fv in features_map[fi]:
-                            xcd['%s=%s' % (fn, fv)] = 1.0
-                    xcd[p["att"]] = 0.0
+def apply_counterfactual(x, delta, feature_names, features_map=None, features_map_inv=None, numeric_columns=None):
 
+    xd = vector2dict(x, feature_names)
+    xcd = xd.copy()
+
+    for p in delta:
+        if p["att"] in numeric_columns:
+            if p["thr"] == int(p["thr"]):
+                gap = 1.0
+            else:
+                decimals = list(str(p["thr"]).split('.')[1])
+                for idx, e in enumerate(decimals):
+                    if e != '0':
+                        break
+                gap = 1 / (10**(idx+1))
+            if p["op"] == '>':
+                xcd[p["att"]] = p["thr"] + gap
+            else:
+                xcd[p["att"]] = p["thr"]
         else:
-            # caso en el que tenemos el rango
-            if p["att"] in numeric_columns:
-                if p["thr"][0] == int(p["thr"][0]):
-                    gap = 1.0
-                else:
-                    decimals = list(str(p["thr"]).split('.')[1])
-                    for idx, e in enumerate(decimals):
-                        if e != '0':
-                            break
-                    gap = 1 / (10**(idx+1))
-                    xcd[p["att"]] = p["thr"]
+            fn = p["att"].split('=')[0]
+            if p["op"] == '>':
+                if features_map is not None:
+                    fi = list(feature_names).index(p["att"])
+                    fi = features_map_inv[fi]
+                    for fv in features_map[fi]:
+                        xcd['%s=%s' % (fn, fv)] = 0.0
+                xcd[p["att"]] = 1.0
             else:
-                fn = p["att"].split('=')[0]
-                if p["op"] == '>':
-                    if features_map is not None:
-                        fi = list(feature_names).index(p["att"])
-                        fi = features_map_inv[fi]
-                        for fv in features_map[fi]:
-                            xcd['%s=%s' % (fn, fv)] = 0.0
-                    xcd[p["att"]] = 1.0
-
-                else:
-                    if features_map is not None:
-                        fi = list(feature_names).index(p["att"])
-                        fi = features_map_inv[fi]
-                        for fv in features_map[fi]:
-                            xcd['%s=%s' % (fn, fv)] = 1.0
-                    xcd[p["att"]] = 0.0
+                if features_map is not None:
+                    fi = list(feature_names).index(p["att"])
+                    fi = features_map_inv[fi]
+                    for fv in features_map[fi]:
+                        xcd['%s=%s' % (fn, fv)] = 1.0
+                xcd[p["att"]] = 0.0
 
     xc = np.zeros(len(xd))
     for i, fn in enumerate(feature_names):
-        try:
-            xc[i] = xcd[fn]
-        except:
-            xc[i] = xcd[fn][0]
+        xc[i] = xcd[fn]
 
     return xc
